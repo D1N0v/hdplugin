@@ -1,4 +1,4 @@
-/* HDRezka for Lampa MX, v1.0.1. ES5, no external browser dependencies. */
+/* HDRezka for Lampa MX, v1.0.2. ES5, no external browser dependencies. */
 (function () {
     'use strict';
     if (window.lampaHdrezkaLoaded) return;
@@ -9,6 +9,7 @@
     // serves only this file; its origin must never be used as the API endpoint.
     var started = false;
     var activeFlow = null;
+    var version = '1.0.2';
     var icon = '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>';
 
     function escape(value) {
@@ -25,24 +26,77 @@
         var base;
         try { base = endpoint(); } catch (error) { failure(error.message); return null; }
         var query = Object.keys(params).map(function (key) { return encodeURIComponent(key) + '=' + encodeURIComponent(params[key]); }).join('&');
-        var xhr = new XMLHttpRequest();
-        xhr.open('GET', base + '/api/' + route + (query ? '?' + query : ''), true);
-        xhr.timeout = 45000;
+        var url = base + '/api/' + route + (query ? '?' + query : '');
         var key = String(Lampa.Storage.get('hdrezka_key', '') || '');
-        if (key) xhr.setRequestHeader('X-API-Key', key);
-        xhr.onload = function () {
-            var data;
-            try { data = JSON.parse(xhr.responseText); } catch (error) { failure('Сервер повернув некоректну відповідь. Перевірте адресу сервера.'); return; }
-            if (xhr.status < 200 || xhr.status >= 300 || data.error) {
-                failure(data.error && data.error.message || 'Помилка сервера: HTTP ' + xhr.status);
+        var finished = false;
+        var network;
+        var xhr;
+        var timeout = route === 'health' ? 15000 : 45000;
+        var timer;
+        var unavailable = 'Сервер HDRezka недоступний. Перевірте адресу, Wi-Fi та HTTP/HTTPS.';
+
+        function stop() {
+            try { if (network) network.clear(); } catch (error) {}
+            try { if (xhr) xhr.abort(); } catch (error) {}
+        }
+        function fail(message) {
+            if (finished) return;
+            finished = true;
+            clearTimeout(timer);
+            stop();
+            failure(message);
+        }
+        function receive(data, status) {
+            if (finished) return;
+            if (typeof data === 'string') {
+                try { data = JSON.parse(data); } catch (error) { fail('Сервер повернув некоректну відповідь. Перевірте адресу сервера.'); return; }
+            }
+            if (!data || typeof data !== 'object') { fail('Сервер повернув некоректну відповідь.'); return; }
+            if (status < 200 || status >= 300 || data.error) {
+                fail(data.error && data.error.message || 'Помилка сервера: HTTP ' + status);
                 return;
             }
+            finished = true;
+            clearTimeout(timer);
             success(data, base);
-        };
-        xhr.onerror = function () { failure('Сервер HDRezka недоступний. Перевірте адресу, Wi-Fi та HTTP/HTTPS.'); };
-        xhr.ontimeout = function () { failure('Час очікування вичерпано. Перевірте сервер та дзеркало HDRezka.'); };
-        xhr.send();
-        return xhr;
+        }
+        function expired() { fail('Сервер не відповів за ' + timeout / 1000 + ' с. Перевірте підключення в Налаштування → HDRezka.'); }
+        // Some TV transports omit timeout/load events. Keep our own deadline
+        // and prefer Lampa's transport, which the device shell can adapt.
+        timer = setTimeout(expired, timeout);
+        try {
+            if (typeof Lampa.Reguest === 'function') {
+                network = new Lampa.Reguest();
+                network.timeout(timeout);
+                network.native(url, function (data) { receive(data, 200); }, function (error) {
+                    if (finished) return;
+                    var data = error && (error.responseJSON || error.responseText);
+                    if (data && Number(error.status) > 0) receive(data, Number(error.status));
+                    else fail(error && Number(error.status) > 0 ? 'Помилка сервера: HTTP ' + error.status : unavailable);
+                }, false, { dataType: 'json', headers: key ? { 'X-API-Key': key } : {} });
+            } else {
+                xhr = new XMLHttpRequest();
+                xhr.open('GET', url, true);
+                xhr.timeout = timeout;
+                if (key) xhr.setRequestHeader('X-API-Key', key);
+                xhr.onload = function () { receive(xhr.responseText, xhr.status); };
+                xhr.onreadystatechange = function () {
+                    if (xhr.readyState === 4 && Number(xhr.status) > 0) receive(xhr.responseText, Number(xhr.status));
+                };
+                xhr.onerror = function () { fail(unavailable); };
+                xhr.ontimeout = expired;
+                xhr.send();
+            }
+        } catch (error) {
+            if (finished) throw error;
+            fail('Не вдалося виконати запит HDRezka. Перевірте підключення в налаштуваннях.');
+        }
+        return { abort: function () {
+            if (finished) return;
+            finished = true;
+            clearTimeout(timer);
+            stop();
+        } };
     }
 
     function open(card) {
@@ -79,19 +133,23 @@
             cancel();
             var ticket = serial;
             menu(caption, [{ title: 'Завантаження…', noenter: true }, { title: 'Скасувати', select: function () { cancel(); back(); } }], function () { cancel(); back(); });
-            pending = request(route, params, function (data, base) {
+            var settled = false;
+            var handle = request(route, params, function (data, base) {
+                settled = true;
                 if (ticket !== serial) return;
                 pending = null;
                 // Select.close() invokes onBack in Lampa. Replace the loading
                 // menu directly so a response cannot restore the card controller.
                 next(data, base);
             }, function (message) {
+                settled = true;
                 if (ticket !== serial) return;
                 pending = null;
                 menu('HDRezka — помилка', [{ title: message, noenter: true },
                     { title: 'Спробувати ще раз', select: function () { load(route, params, caption, next, back); } },
                     { title: 'Назад', select: back }], back);
             });
+            if (!settled && ticket === serial) pending = handle;
         }
 
         function manual() {
@@ -202,10 +260,11 @@
         param('hdrezka_format', 'select', { hls: 'HLS — Apple TV', mp4: 'MP4' }, 'hls', 'Формат відео', 'Програвач обирається у звичайних налаштуваннях Lampa.');
         param('hdrezka_ukrainian', 'trigger', '', true, 'Українські озвучення першими', 'Показувати українські озвучення на початку списку.');
         Lampa.SettingsApi.addParam({ component: 'hdrezka_local', param: { name: 'hdrezka_check', type: 'button' },
-            field: { name: 'Перевірити підключення', description: 'Перевіряє сервер та ключ доступу.' },
+            field: { name: 'Перевірити підключення', description: 'Плагін ' + version + '. Перевіряє сервер та ключ доступу.' },
             onRender: function (item) {
                 item.on('hover:enter', function () {
-                    request('health', {}, function (data) { Lampa.Noty.show('Сервер працює. Дзеркало: ' + escape(data.mirror)); }, function (message) { Lampa.Noty.show(escape(message)); });
+                    Lampa.Noty.show('HDRezka ' + version + ' — перевірка підключення…');
+                    request('health', {}, function (data) { Lampa.Noty.show('HDRezka ' + version + ': сервер працює. Дзеркало: ' + escape(data.mirror)); }, function (message) { Lampa.Noty.show(escape(message)); });
                 });
             } });
     }
@@ -215,7 +274,7 @@
         if (!window.Lampa || !window.jQuery || !Lampa.SettingsApi || !Lampa.Select || !Lampa.Player) return;
         started = true;
         settings();
-        if (Lampa.Manifest) Lampa.Manifest.plugins = { type: 'video', name: 'HDRezka', version: '1.0.1', description: 'Фільми та серіали через власний сервер' };
+        if (Lampa.Manifest) Lampa.Manifest.plugins = { type: 'video', name: 'HDRezka', version: version, description: 'Фільми та серіали через власний сервер' };
         Lampa.Listener.follow('full', function (event) {
             if (event.type !== 'complite' || !event.data || !event.data.movie) return;
             var root = event.body || event.object && event.object.activity && event.object.activity.render();
