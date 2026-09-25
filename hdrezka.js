@@ -1,4 +1,4 @@
-/* HDRezka for Lampa MX, v1.0.2. ES5, no external browser dependencies. */
+/* HDRezka for Lampa MX, v1.0.3. ES5, no external browser dependencies. */
 (function () {
     'use strict';
     if (window.lampaHdrezkaLoaded) return;
@@ -9,7 +9,7 @@
     // serves only this file; its origin must never be used as the API endpoint.
     var started = false;
     var activeFlow = null;
-    var version = '1.0.2';
+    var version = '1.0.3';
     var icon = '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>';
 
     function escape(value) {
@@ -31,9 +31,20 @@
         var finished = false;
         var network;
         var xhr;
+        var direct = false;
+        var nativeError = '';
         var timeout = route === 'health' ? 15000 : 45000;
         var timer;
-        var unavailable = 'Сервер HDRezka недоступний. Перевірте адресу, Wi-Fi та HTTP/HTTPS.';
+
+        function detail(error, fallback) {
+            var status = error && Number(error.status) || 0;
+            var text = String(error && (error.statusText || error.name || error.type) || fallback || 'error');
+            if (key) text = text.split(key).join('[key]');
+            return status + ' / ' + text.replace(/[\r\n]/g, ' ').slice(0, 60);
+        }
+        function networkFailure(error, fallback) {
+            fail('Немає з’єднання. ' + (nativeError ? 'Lampa: ' + nativeError + '; ' : '') + 'XHR: ' + detail(error, fallback));
+        }
 
         function stop() {
             try { if (network) network.clear(); } catch (error) {}
@@ -60,7 +71,31 @@
             clearTimeout(timer);
             success(data, base);
         }
-        function expired() { fail('Сервер не відповів за ' + timeout / 1000 + ' с. Перевірте підключення в Налаштування → HDRezka.'); }
+        function expired() { fail('Сервер не відповів за ' + timeout / 1000 + ' с.' + (nativeError ? ' Lampa: ' + nativeError + '; XHR: timeout.' : ' Перевірте підключення в Налаштування → HDRezka.')); }
+        function sendDirect() {
+            if (finished || direct) return;
+            direct = true;
+            try { if (network) network.clear(); } catch (error) {}
+            try {
+                xhr = new XMLHttpRequest();
+                xhr.open('GET', url, true);
+                xhr.timeout = timeout;
+                if (key) xhr.setRequestHeader('X-API-Key', key);
+                xhr.onload = function () {
+                    if (Number(xhr.status) > 0) receive(xhr.responseText, Number(xhr.status));
+                    else networkFailure(xhr, 'load');
+                };
+                xhr.onreadystatechange = function () {
+                    if (xhr.readyState === 4 && Number(xhr.status) > 0) receive(xhr.responseText, Number(xhr.status));
+                };
+                xhr.onerror = function () { networkFailure(xhr, 'error'); };
+                xhr.ontimeout = expired;
+                xhr.send();
+            } catch (error) {
+                if (finished) throw error;
+                networkFailure(error);
+            }
+        }
         // Some TV transports omit timeout/load events. Keep our own deadline
         // and prefer Lampa's transport, which the device shell can adapt.
         timer = setTimeout(expired, timeout);
@@ -68,28 +103,23 @@
             if (typeof Lampa.Reguest === 'function') {
                 network = new Lampa.Reguest();
                 network.timeout(timeout);
-                network.native(url, function (data) { receive(data, 200); }, function (error) {
-                    if (finished) return;
+                network.native(url, function (data) { if (!direct) receive(data, 200); }, function (error) {
+                    if (finished || direct) return;
                     var data = error && (error.responseJSON || error.responseText);
                     if (data && Number(error.status) > 0) receive(data, Number(error.status));
-                    else fail(error && Number(error.status) > 0 ? 'Помилка сервера: HTTP ' + error.status : unavailable);
+                    else if (error && Number(error.status) > 0) fail('Помилка сервера: HTTP ' + error.status);
+                    else {
+                        // A status of zero can mean jQuery has no cross-origin
+                        // transport. Try the shell's XHR directly, only once.
+                        nativeError = detail(error);
+                        sendDirect();
+                    }
                 }, false, { dataType: 'json', headers: key ? { 'X-API-Key': key } : {} });
-            } else {
-                xhr = new XMLHttpRequest();
-                xhr.open('GET', url, true);
-                xhr.timeout = timeout;
-                if (key) xhr.setRequestHeader('X-API-Key', key);
-                xhr.onload = function () { receive(xhr.responseText, xhr.status); };
-                xhr.onreadystatechange = function () {
-                    if (xhr.readyState === 4 && Number(xhr.status) > 0) receive(xhr.responseText, Number(xhr.status));
-                };
-                xhr.onerror = function () { fail(unavailable); };
-                xhr.ontimeout = expired;
-                xhr.send();
-            }
+            } else sendDirect();
         } catch (error) {
             if (finished) throw error;
-            fail('Не вдалося виконати запит HDRezka. Перевірте підключення в налаштуваннях.');
+            nativeError = detail(error);
+            sendDirect();
         }
         return { abort: function () {
             if (finished) return;
