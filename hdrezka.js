@@ -1,4 +1,4 @@
-/* HDRezka for Lampa MX, v1.0.3. ES5, no external browser dependencies. */
+/* HDRezka for Lampa MX, v1.0.4. ES5, no external browser dependencies. */
 (function () {
     'use strict';
     if (window.lampaHdrezkaLoaded) return;
@@ -9,7 +9,7 @@
     // serves only this file; its origin must never be used as the API endpoint.
     var started = false;
     var activeFlow = null;
-    var version = '1.0.3';
+    var version = '1.0.4';
     var icon = '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>';
 
     function escape(value) {
@@ -22,7 +22,10 @@
         return value;
     }
 
-    function request(route, params, success, failure) {
+    function request(route, params, success, failure, progress) {
+        function stage(message) {
+            try { if (progress) progress(message); } catch (error) {}
+        }
         var base;
         try { base = endpoint(); } catch (error) { failure(error.message); return null; }
         var query = Object.keys(params).map(function (key) { return encodeURIComponent(key) + '=' + encodeURIComponent(params[key]); }).join('&');
@@ -54,8 +57,8 @@
             if (finished) return;
             finished = true;
             clearTimeout(timer);
-            stop();
-            failure(message);
+            // Display and save the result before cleanup in the device bridge.
+            try { failure(message); } finally { stop(); }
         }
         function receive(data, status) {
             if (finished) return;
@@ -75,9 +78,11 @@
         function sendDirect() {
             if (finished || direct) return;
             direct = true;
+            stage('Резервний XHR: підготовка' + (nativeError ? ' (Lampa: ' + nativeError + ')' : ''));
             try { if (network) network.clear(); } catch (error) {}
             try {
                 xhr = new XMLHttpRequest();
+                stage('XHR: відкриття HTTPS/HTTP-запиту');
                 xhr.open('GET', url, true);
                 xhr.timeout = timeout;
                 if (key) xhr.setRequestHeader('X-API-Key', key);
@@ -86,11 +91,14 @@
                     else networkFailure(xhr, 'load');
                 };
                 xhr.onreadystatechange = function () {
+                    if (!finished) stage('XHR: стан ' + xhr.readyState + ', HTTP ' + (Number(xhr.status) || 0));
                     if (xhr.readyState === 4 && Number(xhr.status) > 0) receive(xhr.responseText, Number(xhr.status));
                 };
                 xhr.onerror = function () { networkFailure(xhr, 'error'); };
                 xhr.ontimeout = expired;
+                stage('XHR: надсилання запиту');
                 xhr.send();
+                if (!finished) stage('XHR: очікування відповіді');
             } catch (error) {
                 if (finished) throw error;
                 networkFailure(error);
@@ -101,8 +109,10 @@
         timer = setTimeout(expired, timeout);
         try {
             if (typeof Lampa.Reguest === 'function') {
+                stage('Lampa: підготовка запиту');
                 network = new Lampa.Reguest();
                 network.timeout(timeout);
+                stage('Lampa: надсилання запиту');
                 network.native(url, function (data) { if (!direct) receive(data, 200); }, function (error) {
                     if (finished || direct) return;
                     var data = error && (error.responseJSON || error.responseText);
@@ -115,6 +125,7 @@
                         sendDirect();
                     }
                 }, false, { dataType: 'json', headers: key ? { 'X-API-Key': key } : {} });
+                if (!finished && !direct) stage('Lampa: очікування відповіді');
             } else sendDirect();
         } catch (error) {
             if (finished) throw error;
@@ -289,12 +300,62 @@
         param('hdrezka_key', 'input', '', '', 'Ключ сервера', 'Значення API_KEY, якщо його налаштовано на сервері.');
         param('hdrezka_format', 'select', { hls: 'HLS — Apple TV', mp4: 'MP4' }, 'hls', 'Формат відео', 'Програвач обирається у звичайних налаштуваннях Lampa.');
         param('hdrezka_ukrainian', 'trigger', '', true, 'Українські озвучення першими', 'Показувати українські озвучення на початку списку.');
+        var check = Lampa.Storage.get('hdrezka_check_result', null);
+        var checkView;
+        var checkSerial = 0;
+        var checkPending;
+        function showCheck() {
+            var text = 'Плагін ' + version + '. Натисніть для перевірки (до 15 с).';
+            if (check && typeof check === 'object') {
+                if (check.state === 'running' && Date.now() - check.started >= 15000) {
+                    check.state = 'error';
+                    check.message = 'Перевірка не завершилася за 15 с. Нижче — останній виконаний етап.';
+                }
+                text += '\n' + (check.server ? 'Сервер: ' + check.server + '\n' : '') + check.message;
+                if (check.phase) text += '\nЕтап: ' + check.phase;
+            }
+            if (checkView) checkView.find('.settings-param__descr').text(text).css('white-space', 'pre-line');
+        }
+        function saveCheck() {
+            showCheck();
+            try { Lampa.Storage.set('hdrezka_check_result', check); } catch (error) {}
+        }
         Lampa.SettingsApi.addParam({ component: 'hdrezka_local', param: { name: 'hdrezka_check', type: 'button' },
-            field: { name: 'Перевірити підключення', description: 'Плагін ' + version + '. Перевіряє сервер та ключ доступу.' },
+            field: { name: 'Перевірити підключення', description: 'Плагін ' + version + '. Результат залишиться під цією кнопкою.' },
             onRender: function (item) {
+                checkView = $(item);
+                showCheck();
                 item.on('hover:enter', function () {
-                    Lampa.Noty.show('HDRezka ' + version + ' — перевірка підключення…');
-                    request('health', {}, function (data) { Lampa.Noty.show('HDRezka ' + version + ': сервер працює. Дзеркало: ' + escape(data.mirror)); }, function (message) { Lampa.Noty.show(escape(message)); });
+                    // Keep diagnostics in the settings row and storage. Native
+                    // shells can lose or replace transient Noty notifications.
+                    if (check && check.state === 'running' && Date.now() - check.started < 15000) { showCheck(); return; }
+                    var ticket = ++checkSerial;
+                    check = { state: 'running', started: Date.now(), message: 'Перевірка підключення…', phase: 'Початок', server: '', version: version };
+                    try { check.server = endpoint(); } catch (error) {}
+                    saveCheck();
+                    if (checkPending) checkPending.abort();
+                    var settled = false;
+                    var handle = request('health', {}, function (data) {
+                        if (ticket !== checkSerial) return;
+                        settled = true;
+                        checkPending = null;
+                        check.state = 'ok';
+                        check.message = 'Сервер працює. Дзеркало: ' + data.mirror;
+                        check.phase = 'Отримано відповідь API';
+                        saveCheck();
+                    }, function (message) {
+                        if (ticket !== checkSerial) return;
+                        settled = true;
+                        checkPending = null;
+                        check.state = 'error';
+                        check.message = message;
+                        saveCheck();
+                    }, function (phase) {
+                        if (ticket !== checkSerial) return;
+                        check.phase = phase;
+                        saveCheck();
+                    });
+                    if (!settled) checkPending = handle;
                 });
             } });
     }
