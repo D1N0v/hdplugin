@@ -1,4 +1,4 @@
-/* HDRezka for Lampa MX, v1.0.5. ES5, no external browser dependencies. */
+/* HDRezka for Lampa MX, v1.1.0. ES5, no external browser dependencies. */
 (function () {
     'use strict';
     if (window.lampaHdrezkaLoaded) return;
@@ -9,7 +9,7 @@
     // serves only this file; its origin must never be used as the API endpoint.
     var started = false;
     var activeFlow = null;
-    var version = '1.0.5';
+    var version = '1.1.0';
     var icon = '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>';
 
     function escape(value) {
@@ -154,6 +154,29 @@
         } };
     }
 
+    function remembers() { return Lampa.Storage.get('hdrezka_remember', true) !== false; }
+
+    function history() {
+        var data = Lampa.Storage.get('hdrezka_history', []);
+        return Array.isArray(data) ? data : [];
+    }
+
+    function remember(key, value) {
+        if (!remembers()) return;
+        var entries = history().filter(function (item) { return item && item.key !== key; });
+        entries.unshift({ key: key, value: value });
+        try { Lampa.Storage.set('hdrezka_history', entries.slice(0, 100)); } catch (error) {}
+    }
+
+    function bestQuality(streams) {
+        function height(item) {
+            return Number(item.height) || (/4k/i.test(item.label) ? 2160 : /8k/i.test(item.label) ? 4320 : parseInt(item.label, 10)) || 0;
+        }
+        return (streams || []).filter(function (item) { return item && item.url; }).sort(function (a, b) {
+            return height(b) - height(a) || Number(/Ultra/i.test(b.label)) - Number(/Ultra/i.test(a.label));
+        })[0];
+    }
+
     function open(card) {
         if (activeFlow) activeFlow.cancel();
         var previous = Lampa.Controller.enabled();
@@ -168,6 +191,18 @@
         var query = card.original_title || card.original_name || card.title || card.name || '';
         var localized = card.title || card.name || '';
         var year = String(card.release_date || card.first_air_date || '').slice(0, 4);
+        var memoryKey = String(card.source || 'tmdb') + ':' + (card.media_type || (card.first_air_date || card.original_name ? 'tv' : 'movie')) + ':' + (card.id || localized + ':' + year);
+        var saved = null;
+        if (remembers()) history().some(function (item) {
+            if (item && item.key === memoryKey && item.value && typeof item.value.path === 'string') { saved = item.value; return true; }
+            return false;
+        });
+        var restored = false;
+        function save(episodeId) {
+            saved = { path: title.path, translator: voice && voice.id || '', season: season && season.id || '', episode: episodeId || '' };
+            remember(memoryKey, saved);
+        }
+        function resultsBack() { if (restored) search(true); else showResults(); }
 
         function cancel() {
             serial++;
@@ -218,6 +253,7 @@
         function search(fallback) {
             load('search', { q: query }, 'HDRezka — пошук', function (data) {
                 results = data.items || [];
+                restored = false;
                 if (!results.length && fallback && localized.length >= 2 && localized !== query) {
                     query = localized;
                     search(false);
@@ -231,7 +267,9 @@
         function showResults() {
             var items = results.map(function (item) {
                 return { title: item.title, subtitle: item.description, select: function () {
-                    load('title', { path: item.path }, item.title, function (data) { title = data; showVoices(); }, showResults);
+                    load('title', { path: item.path }, item.title, function (data) {
+                        title = data; voice = null; season = null; save(''); showVoices();
+                    }, showResults);
                 } };
             });
             if (!items.length) items.push({ title: 'Нічого не знайдено. Спробуйте іншу назву.', noenter: true });
@@ -243,64 +281,92 @@
             var voices = title.voices.slice();
             if (Lampa.Storage.get('hdrezka_ukrainian', true)) voices.sort(function (a, b) { return Number(b.language === 'uk') - Number(a.language === 'uk'); });
             menu(title.title + ' — озвучення', voices.map(function (item) {
-                return { title: (item.language === 'uk' ? '🇺🇦 ' : '') + item.name,
+                return { title: (item.language === 'uk' ? '🇺🇦 ' : '') + item.name, selected: !!(saved && String(saved.translator) === String(item.id)),
                     subtitle: item.premium ? 'Потрібна відповідна підписка HDRezka' : '',
                     select: function () {
                         voice = item;
-                        if (title.kind === 'series') {
-                            load('episodes', { path: title.path, translator: voice.id }, 'Сезони', function (data) {
-                                seasons = data.seasons;
-                                showSeasons();
-                            }, showVoices);
-                        } else stream(null, showVoices);
+                        season = null; save('');
+                        if (title.kind === 'series') fetchSeasons(false);
+                        else stream(null, showVoices);
                     } };
-            }), showResults);
+            }), resultsBack);
+        }
+
+        function fetchSeasons(resume) {
+            load('episodes', { path: title.path, translator: voice.id }, 'Сезони', function (data) {
+                seasons = data.seasons || [];
+                if (resume && saved) {
+                    seasons.some(function (item) { if (String(item.id) === String(saved.season)) { season = item; return true; } return false; });
+                }
+                if (season) showEpisodes();
+                else showSeasons();
+            }, showVoices);
         }
 
         function showSeasons() {
             menu(title.title + ' — сезони', seasons.map(function (item) {
-                return { title: item.title, subtitle: item.episodes.length + ' серій', select: function () { season = item; showEpisodes(); } };
+                return { title: item.title, subtitle: item.episodes.length + ' серій', select: function () {
+                    var previousEpisode = saved && String(saved.season) === String(item.id) ? saved.episode : '';
+                    season = item; save(previousEpisode); showEpisodes();
+                } };
             }), showVoices);
         }
 
         function showEpisodes() {
             menu(title.title + ' — ' + season.title, season.episodes.map(function (item) {
-                return { title: item.title, subtitle: voice.name, select: function () { stream(item, showEpisodes); } };
+                return { title: item.title, subtitle: voice.name, selected: !!(saved && String(saved.episode) === String(item.id)),
+                    select: function () { save(item.id); stream(item, showEpisodes); } };
             }), showSeasons);
         }
 
         function stream(episode, back) {
             var args = { path: title.path, translator: voice.id, format: Lampa.Storage.get('hdrezka_format', 'hls') };
             if (episode) { args.season = season.id; args.episode = episode.id; }
-            load('stream', args, 'HDRezka — якість', function (data, base) {
-                menu('Оберіть якість', data.streams.map(function (quality) {
-                    return { title: quality.label, subtitle: voice.name, select: function () {
-                        var name = title.title + (episode ? ' [S' + season.id + ':E' + episode.id + '] ' + episode.title : '');
-                        var playlist = (data.playlist || []).map(function (item) {
-                            var entry = { title: title.title + ' [S' + item.season + ':E' + item.episode + '] ' + item.title,
-                                url: base + (item.quality && item.quality[quality.label] || item.url),
-                                season: Number(item.season), episode: Number(item.episode), card: card, source: 'HDRezka', voice_name: voice.name };
-                            if (episode && String(item.episode) === String(episode.id) && String(item.season) === String(season.id)) {
-                                entry.url = base + quality.url;
-                                entry.selected = true;
-                            }
-                            if (Lampa.Timeline && Lampa.Utils) entry.timeline = Lampa.Timeline.view(Lampa.Utils.hash('hdrezka:' + title.path + ':' + item.season + ':' + item.episode));
-                            return entry;
-                        });
-                        var subtitles = (data.subtitles || []).map(function (item) { return { label: item.label, url: item.url.charAt(0) === '/' ? base + item.url : item.url }; });
-                        var play = { title: name, url: base + quality.url, subtitles: subtitles, card: card,
-                            source: 'HDRezka', voice_name: voice.name, playlist: playlist };
-                        if (episode) { play.season = Number(season.id); play.episode = Number(episode.id); }
-                        if (Lampa.Timeline && Lampa.Utils) play.timeline = Lampa.Timeline.view(Lampa.Utils.hash('hdrezka:' + title.path + ':' + (episode ? season.id + ':' + episode.id : 'movie')));
-                        finish();
-                        Lampa.Player.play(play);
-                        Lampa.Player.playlist(playlist.length ? playlist : [play]);
-                    } };
-                }), back);
+            load('stream', args, 'HDRezka — запуск відео', function (data, base) {
+                var quality = bestQuality(data.streams);
+                if (!quality) {
+                    menu('HDRezka', [{ title: 'Немає доступного відео для цього озвучення.', noenter: true }, { title: 'Назад', select: back }], back);
+                    return;
+                }
+                save(episode && episode.id);
+                var name = title.title + (episode ? ' [S' + season.id + ':E' + episode.id + '] ' + episode.title : '');
+                var playlist = (data.playlist || []).map(function (item) {
+                    var entry = { title: title.title + ' [S' + item.season + ':E' + item.episode + '] ' + item.title,
+                        url: base + item.url,
+                        season: Number(item.season), episode: Number(item.episode), card: card, source: 'HDRezka', voice_name: voice.name };
+                    if (episode && String(item.episode) === String(episode.id) && String(item.season) === String(season.id)) {
+                        entry.url = base + quality.url;
+                        entry.selected = true;
+                    }
+                    entry.hdrezka_memory = { key: memoryKey, value: { path: title.path, translator: voice.id, season: item.season, episode: item.episode } };
+                    if (Lampa.Timeline && Lampa.Utils) entry.timeline = Lampa.Timeline.view(Lampa.Utils.hash('hdrezka:' + title.path + ':' + item.season + ':' + item.episode));
+                    return entry;
+                });
+                var subtitles = (data.subtitles || []).map(function (item) { return { label: item.label, url: item.url.charAt(0) === '/' ? base + item.url : item.url }; });
+                var play = { title: name, url: base + quality.url, subtitles: subtitles, card: card,
+                    source: 'HDRezka', voice_name: voice.name, playlist: playlist };
+                play.hdrezka_memory = { key: memoryKey, value: saved };
+                if (episode) { play.season = Number(season.id); play.episode = Number(episode.id); }
+                if (Lampa.Timeline && Lampa.Utils) play.timeline = Lampa.Timeline.view(Lampa.Utils.hash('hdrezka:' + title.path + ':' + (episode ? season.id + ':' + episode.id : 'movie')));
+                Lampa.Select.hide();
+                finish();
+                Lampa.Player.play(play);
+                Lampa.Player.playlist(playlist.length ? playlist : [play]);
             }, back);
         }
 
-        if (query.length >= 2) search(true);
+        if (saved) {
+            restored = true;
+            load('title', { path: saved.path }, 'HDRezka — збережений вибір', function (data) {
+                title = data;
+                if (title.kind === 'series') {
+                    title.voices.some(function (item) { if (String(item.id) === String(saved.translator)) { voice = item; return true; } return false; });
+                    if (voice) { fetchSeasons(true); return; }
+                }
+                showVoices();
+            }, function () { search(true); });
+        }
+        else if (query.length >= 2) search(true);
         else manual();
     }
 
@@ -315,6 +381,7 @@
         param('hdrezka_key', 'input', '', '', 'Ключ сервера', 'Значення API_KEY, якщо його налаштовано на сервері.');
         param('hdrezka_format', 'select', { hls: 'HLS — Apple TV', mp4: 'MP4' }, 'hls', 'Формат відео', 'Програвач обирається у звичайних налаштуваннях Lampa.');
         param('hdrezka_ukrainian', 'trigger', '', true, 'Українські озвучення першими', 'Показувати українські озвучення на початку списку.');
+        param('hdrezka_remember', 'trigger', '', true, 'Запам’ятовувати вибір', 'Зберігати фільм або серіал, озвучення, сезон і серію на цьому пристрої.');
         var check = Lampa.Storage.get('hdrezka_check_result', null);
         var checkView;
         var checkSerial = 0;
@@ -380,6 +447,10 @@
         if (!window.Lampa || !window.jQuery || !Lampa.SettingsApi || !Lampa.Select || !Lampa.Player) return;
         started = true;
         settings();
+        if (Lampa.Player.listener) Lampa.Player.listener.follow('create', function (event) {
+            var memory = event && event.data && event.data.hdrezka_memory;
+            if (memory && memory.key && memory.value) remember(memory.key, memory.value);
+        });
         if (Lampa.Manifest) Lampa.Manifest.plugins = { type: 'video', name: 'HDRezka', version: version, description: 'Фільми та серіали через власний сервер' };
         Lampa.Listener.follow('full', function (event) {
             if (event.type !== 'complite' || !event.data || !event.data.movie) return;
