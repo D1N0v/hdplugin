@@ -1,4 +1,4 @@
-/* HDRezka for Lampa MX, v1.0.0. ES5, no external browser dependencies. */
+/* HDRezka for Lampa MX, v1.0.1. ES5, no external browser dependencies. */
 (function () {
     'use strict';
     if (window.lampaHdrezkaLoaded) return;
@@ -82,7 +82,8 @@
             pending = request(route, params, function (data, base) {
                 if (ticket !== serial) return;
                 pending = null;
-                Lampa.Select.close();
+                // Select.close() invokes onBack in Lampa. Replace the loading
+                // menu directly so a response cannot restore the card controller.
                 next(data, base);
             }, function (message) {
                 if (ticket !== serial) return;
@@ -214,7 +215,7 @@
         if (!window.Lampa || !window.jQuery || !Lampa.SettingsApi || !Lampa.Select || !Lampa.Player) return;
         started = true;
         settings();
-        if (Lampa.Manifest) Lampa.Manifest.plugins = { type: 'video', name: 'HDRezka', version: '1.0.0', description: 'Фільми та серіали через власний сервер' };
+        if (Lampa.Manifest) Lampa.Manifest.plugins = { type: 'video', name: 'HDRezka', version: '1.0.1', description: 'Фільми та серіали через власний сервер' };
         Lampa.Listener.follow('full', function (event) {
             if (event.type !== 'complite' || !event.data || !event.data.movie) return;
             var root = event.body || event.object && event.object.activity && event.object.activity.render();
