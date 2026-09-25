@@ -1,2 +1,16 @@
-# lampa-hdrezka
-HDRezka plugin for Lampa MX — static GitHub Pages distribution
+# HDRezka для Lampa MX
+
+Цей репозиторій публікує JavaScript-плагін через GitHub Pages.
+
+1. Додайте URL **hdrezka.js** із цього GitHub Pages сайту в Lampa → Налаштування → Розширення.
+2. Перезапустіть Lampa.
+3. У Налаштування → HDRezka → Адреса сервера вкажіть адресу власного сервера HDRezka, без /hdrezka.js.
+4. Натисніть «Перевірити підключення».
+
+Плагін підтримує пошук, українські озвучення, сезони, серії, якість і субтитри.
+
+**GitHub Pages розміщує тільки JS-файл.** API та HLS обслуговує окремий companion server. Якщо оболонка Lampa працює через HTTPS і блокує локальний HTTP, для API теж потрібна HTTPS-адреса з довіреним сертифікатом. Публікація JS сама по собі не змінює мережеві дозволи Apple TV.
+
+Ключ сервера, cookies і адреси приватної мережі задаються користувачем і не включені в публікацію. Не запускайте hdrezka.js як окрему вебсторінку — це розширення для Lampa.
+
+Джерела API: [Lampa](https://github.com/yumata/lampa-source), [go-hdrezka](https://github.com/n0madic/go-hdrezka). Ліцензійні повідомлення — у THIRD_PARTY_NOTICES.md.
