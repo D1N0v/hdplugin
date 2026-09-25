@@ -1,4 +1,4 @@
-/* HDRezka for Lampa MX, v1.0.4. ES5, no external browser dependencies. */
+/* HDRezka for Lampa MX, v1.0.5. ES5, no external browser dependencies. */
 (function () {
     'use strict';
     if (window.lampaHdrezkaLoaded) return;
@@ -9,7 +9,7 @@
     // serves only this file; its origin must never be used as the API endpoint.
     var started = false;
     var activeFlow = null;
-    var version = '1.0.4';
+    var version = '1.0.5';
     var icon = '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>';
 
     function escape(value) {
@@ -37,7 +37,10 @@
         var direct = false;
         var nativeError = '';
         var timeout = route === 'health' ? 15000 : 45000;
+        var startedAt = Date.now();
+        var nativeWait = route === 'health' ? 5000 : 12000;
         var timer;
+        var nativeTimer;
 
         function detail(error, fallback) {
             var status = error && Number(error.status) || 0;
@@ -57,6 +60,7 @@
             if (finished) return;
             finished = true;
             clearTimeout(timer);
+            clearTimeout(nativeTimer);
             // Display and save the result before cleanup in the device bridge.
             try { failure(message); } finally { stop(); }
         }
@@ -72,19 +76,21 @@
             }
             finished = true;
             clearTimeout(timer);
+            clearTimeout(nativeTimer);
             success(data, base);
         }
         function expired() { fail('Сервер не відповів за ' + timeout / 1000 + ' с.' + (nativeError ? ' Lampa: ' + nativeError + '; XHR: timeout.' : ' Перевірте підключення в Налаштування → HDRezka.')); }
         function sendDirect() {
             if (finished || direct) return;
             direct = true;
+            clearTimeout(nativeTimer);
             stage('Резервний XHR: підготовка' + (nativeError ? ' (Lampa: ' + nativeError + ')' : ''));
             try { if (network) network.clear(); } catch (error) {}
             try {
                 xhr = new XMLHttpRequest();
                 stage('XHR: відкриття HTTPS/HTTP-запиту');
                 xhr.open('GET', url, true);
-                xhr.timeout = timeout;
+                xhr.timeout = Math.max(1, timeout - (Date.now() - startedAt));
                 if (key) xhr.setRequestHeader('X-API-Key', key);
                 xhr.onload = function () {
                     if (Number(xhr.status) > 0) receive(xhr.responseText, Number(xhr.status));
@@ -109,6 +115,13 @@
         timer = setTimeout(expired, timeout);
         try {
             if (typeof Lampa.Reguest === 'function') {
+                // Some device bridges neither complete nor report an error.
+                // Reserve time for direct XHR within the original deadline.
+                nativeTimer = setTimeout(function () {
+                    if (finished || direct) return;
+                    nativeError = '0 / немає подій за ' + nativeWait / 1000 + ' с';
+                    sendDirect();
+                }, nativeWait);
                 stage('Lampa: підготовка запиту');
                 network = new Lampa.Reguest();
                 network.timeout(timeout);
@@ -136,6 +149,7 @@
             if (finished) return;
             finished = true;
             clearTimeout(timer);
+            clearTimeout(nativeTimer);
             stop();
         } };
     }
@@ -293,7 +307,8 @@
     function settings() {
         Lampa.SettingsApi.addComponent({ component: 'hdrezka_local', name: 'HDRezka', icon: icon });
         function param(name, type, values, value, label, description) {
-            Lampa.SettingsApi.addParam({ component: 'hdrezka_local', param: { name: name, type: type, values: values, default: value },
+            Lampa.SettingsApi.addParam({ component: 'hdrezka_local', param: { name: name, type: type, values: values, default: value,
+                placeholder: type === 'input' ? (name === 'hdrezka_key' ? 'Не задано' : 'https://адреса-сервера') : '' },
                 field: { name: label, description: description } });
         }
         param('hdrezka_server', 'input', '', defaultServer, 'Адреса сервера', 'Адреса вашого сервера HDRezka, без /hdrezka.js. GitHub Pages розміщує тільки плагін.');
