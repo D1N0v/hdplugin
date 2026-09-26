@@ -1,4 +1,4 @@
-/* HDRezka for Lampa MX, v1.1.0. ES5, no external browser dependencies. */
+/* HDRezka for Lampa MX, v1.1.1. ES5, no external browser dependencies. */
 (function () {
     'use strict';
     if (window.lampaHdrezkaLoaded) return;
@@ -9,7 +9,7 @@
     // serves only this file; its origin must never be used as the API endpoint.
     var started = false;
     var activeFlow = null;
-    var version = '1.1.0';
+    var version = '1.1.1';
     var icon = '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>';
 
     function escape(value) {
@@ -31,6 +31,8 @@
         var query = Object.keys(params).map(function (key) { return encodeURIComponent(key) + '=' + encodeURIComponent(params[key]); }).join('&');
         var url = base + '/api/' + route + (query ? '?' + query : '');
         var key = String(Lampa.Storage.get('hdrezka_key', '') || '');
+        var headers = { 'ngrok-skip-browser-warning': 'true' };
+        if (key) headers['X-API-Key'] = key;
         var finished = false;
         var network;
         var xhr;
@@ -91,7 +93,7 @@
                 stage('XHR: відкриття HTTPS/HTTP-запиту');
                 xhr.open('GET', url, true);
                 xhr.timeout = Math.max(1, timeout - (Date.now() - startedAt));
-                if (key) xhr.setRequestHeader('X-API-Key', key);
+                Object.keys(headers).forEach(function (name) { xhr.setRequestHeader(name, headers[name]); });
                 xhr.onload = function () {
                     if (Number(xhr.status) > 0) receive(xhr.responseText, Number(xhr.status));
                     else networkFailure(xhr, 'load');
@@ -137,7 +139,7 @@
                         nativeError = detail(error);
                         sendDirect();
                     }
-                }, false, { dataType: 'json', headers: key ? { 'X-API-Key': key } : {} });
+                }, false, { dataType: 'json', headers: headers });
                 if (!finished && !direct) stage('Lampa: очікування відповіді');
             } else sendDirect();
         } catch (error) {
