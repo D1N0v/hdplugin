@@ -9,7 +9,7 @@
     // serves only this file; its origin must never be used as the API endpoint.
     var started = false;
     var activeFlow = null;
-    var version = '1.1.1';
+    var version = '1.1.2';
     var icon = '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>';
 
     function escape(value) {
@@ -335,7 +335,7 @@
                 var playlist = (data.playlist || []).map(function (item) {
                     var entry = { title: title.title + ' [S' + item.season + ':E' + item.episode + '] ' + item.title,
                         url: base + item.url,
-                        season: Number(item.season), episode: Number(item.episode), card: card, source: 'HDRezka', voice_name: voice.name };
+                        season: Number(item.season), episode: Number(item.episode), card: card, source: 'HDRezka' };
                     if (episode && String(item.episode) === String(episode.id) && String(item.season) === String(season.id)) {
                         entry.url = base + quality.url;
                         entry.selected = true;
@@ -346,7 +346,7 @@
                 });
                 var subtitles = (data.subtitles || []).map(function (item) { return { label: item.label, url: item.url.charAt(0) === '/' ? base + item.url : item.url }; });
                 var play = { title: name, url: base + quality.url, subtitles: subtitles, card: card,
-                    source: 'HDRezka', voice_name: voice.name, playlist: playlist };
+                    source: 'HDRezka', playlist: playlist };
                 play.hdrezka_memory = { key: memoryKey, value: saved };
                 if (episode) { play.season = Number(season.id); play.episode = Number(episode.id); }
                 if (Lampa.Timeline && Lampa.Utils) play.timeline = Lampa.Timeline.view(Lampa.Utils.hash('hdrezka:' + title.path + ':' + (episode ? season.id + ':' + episode.id : 'movie')));
